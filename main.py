@@ -9,6 +9,9 @@ from langchain_core.documents import Document
 from langchain_openai import OpenAIEmbeddings
 from langchain_chroma import Chroma
 
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
+
 # Initialize the FastAPI application
 app = FastAPI(
     title="Enterprise AI Orchestrator",
@@ -99,6 +102,71 @@ async def process_document(event: DocumentEvent):
             "document_id": event.document_id,
             "chunks_created": len(chunks),
             "message": f"Successfully chunked and embedded {event.filename} via LM Studio."
+        }
+
+    except Exception as e:
+        print(f"❌ [AI ENGINE ERROR] {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+# --- THE CHAT ENGINE ---
+
+# Define the shape of the incoming question
+class AskEvent(BaseModel):
+    document_id: str
+    question: str
+
+@app.post("/ask-copilot")
+async def ask_copilot(event: AskEvent):
+    print(f"\n💬 [AI ENGINE] Question received for doc {event.document_id}: '{event.question}'")
+
+    try:
+        # 1. RETRIEVAL: Find the top 3 most relevant chunks in ChromaDB
+        print("🔍 [AI ENGINE] Searching Vector Database for the answer...")
+        
+        # We explicitly filter by document_id so it doesn't accidentally pull answers from a different PDF!
+        results = vector_store.similarity_search(
+            query=event.question,
+            k=3,
+            filter={"document_id": event.document_id} 
+        )
+
+        if not results:
+            return {
+                "answer": "I couldn't find any relevant information in this document.", 
+                "sources": []
+            }
+
+        # Combine the 3 chunks into a single giant string of context
+        context = "\n\n".join([doc.page_content for doc in results])
+        print(f"✅ [AI ENGINE] Found {len(results)} relevant chunks.")
+
+        # 2. GENERATION: Connect to your Generative LLM (Llama 3 in LM Studio)
+        print("🧠 [AI ENGINE] Sending context to Generative LLM for final answer...")
+        
+        # We set temperature to 0.1 so the AI doesn't hallucinate. It stays strictly factual.
+        llm = ChatOpenAI(
+            openai_api_base="http://localhost:1234/v1",
+            openai_api_key="lm-studio",
+            temperature=0.1 
+        )
+
+        # 3. PROMPT ENGINEERING: The Enterprise Guardrails
+        prompt_template = ChatPromptTemplate.from_messages([
+            ("system", "You are an expert enterprise AI assistant. Answer the user's question using ONLY the provided CONTEXT. If the answer is not in the context, say 'I don't know based on the provided document.' Do not make things up.\n\nCONTEXT:\n{context}"),
+            ("user", "{question}")
+        ])
+
+        # 4. CHAIN IT TOGETHER AND RUN IT
+        chain = prompt_template | llm
+        response = chain.invoke({"context": context, "question": event.question})
+
+        print("✅ [AI ENGINE] Answer generated successfully!")
+
+        return {
+            "answer": response.content,
+            "sources": [event.document_id]
         }
 
     except Exception as e:
