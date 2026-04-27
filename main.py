@@ -24,7 +24,7 @@ print("🧠 [AI ENGINE] Connecting to LM Studio Local Server...")
 
 # THE DROP-IN PATTERN: We use the official OpenAI class, but hijack the URL.
 embeddings = OpenAIEmbeddings(
-    openai_api_base="http://localhost:1234/v1",
+    openai_api_base="http://host.docker.internal:1234/v1",
     openai_api_key="lm-studio",
     model="text-embedding-nomic-embed-text-v1.5", # 👉 FIX 1: Explicitly name your LM Studio model
     check_embedding_ctx_length=False # 👉 FIX 2: Forces LangChain to send raw strings, NOT integers
@@ -147,7 +147,7 @@ async def ask_copilot(event: AskEvent):
         
         # We set temperature to 0.1 so the AI doesn't hallucinate. It stays strictly factual.
         llm = ChatOpenAI(
-            openai_api_base="http://localhost:1234/v1",
+            openai_api_base="http://host.docker.internal:1234/v1",
             openai_api_key="lm-studio",
             temperature=0.1 
         )

@@ -2,7 +2,9 @@ fastapi
 uvicorn
 pydantic
 langchain
-langgraph
 openai
 python-dotenv
-pinecone-client
+PyPDF2
+langchain-openai
+langchain-chroma
+chromadb
