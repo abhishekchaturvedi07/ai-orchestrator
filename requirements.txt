@@ -9,3 +9,4 @@ PyPDF2
 langchain-openai
 langchain-chroma
 chromadb
+pika    

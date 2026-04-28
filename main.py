@@ -1,4 +1,5 @@
 import os
+import threading # 👉 NEW: Required to run the RabbitMQ worker alongside FastAPI
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import PyPDF2
@@ -11,6 +12,9 @@ from langchain_chroma import Chroma
 
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
+
+# 👉 NEW: Import our custom RabbitMQ consumer logic
+from worker import start_worker
 
 # Initialize the FastAPI application
 app = FastAPI(
@@ -49,6 +53,14 @@ class DocumentEvent(BaseModel):
 async def health_check():
     return {"status": "online", "service": "ai-orchestrator"}
 
+"""
+ARCHITECTURAL NOTE [LEGACY API]:
+This /process-document endpoint is our Phase 1 Synchronous REST implementation. 
+While it still works, it forces the caller (BFF) to wait for the entire PDF to be chunked and embedded.
+In Phase 8 (Event-Driven), we shifted to RabbitMQ. The actual logic inside this route 
+is now mirrored inside `worker.py` for asynchronous background processing. 
+We keep this endpoint alive for manual testing or direct API overrides.
+"""
 @app.post("/process-document")
 async def process_document(event: DocumentEvent):
     print(f"\n📥 [AI ENGINE] Received task to process: {event.document_id}")
@@ -172,3 +184,20 @@ async def ask_copilot(event: AskEvent):
     except Exception as e:
         print(f"❌ [AI ENGINE ERROR] {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- ⚡ EVENT-DRIVEN BACKBONE (Phase 8 Integration) ---
+
+"""
+ARCHITECTURAL NOTE [ASYNCHRONOUS WORKER]:
+In an enterprise environment, long-running ML tasks (like embedding a 50-page PDF) 
+should never block the main web thread. We attach a background Daemon Thread to the 
+FastAPI startup lifecycle. This thread listens to the RabbitMQ 'document_ingestion_queue'.
+When the Node.js BFF drops a message in the queue, this worker picks it up and processes it silently.
+"""
+@app.on_event("startup")
+def startup_event():
+    print("🚀 [EVENT MESH] Spinning up Background RabbitMQ Consumer Thread...")
+    # daemon=True ensures the thread dies safely if the FastAPI server is shut down
+    worker_thread = threading.Thread(target=start_worker, daemon=True)
+    worker_thread.start()
