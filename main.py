@@ -13,8 +13,9 @@ from langchain_chroma import Chroma
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 
-# 👉 NEW: Import our custom RabbitMQ consumer logic
 from worker import start_worker
+
+from prometheus_fastapi_instrumentator import Instrumentator
 
 # Initialize the FastAPI application
 app = FastAPI(
@@ -25,6 +26,9 @@ app = FastAPI(
 
 # --- START UP THE AI BRAIN (VIA LM STUDIO) ---
 print("🧠 [AI ENGINE] Connecting to LM Studio Local Server...")
+
+# NEW: Instrument the app to expose a /metrics endpoint for Prometheus
+Instrumentator().instrument(app).expose(app)
 
 # THE DROP-IN PATTERN: We use the official OpenAI class, but hijack the URL.
 embeddings = OpenAIEmbeddings(
