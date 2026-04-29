@@ -11,3 +11,7 @@ langchain-chroma
 chromadb
 pika    
 prometheus-fastapi-instrumentator
+langgraph
+langchain-community
+duckduckgo-search>=5.0.0
+ddgs

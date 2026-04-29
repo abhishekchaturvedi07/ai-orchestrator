@@ -17,6 +17,9 @@ from worker import start_worker
 
 from prometheus_fastapi_instrumentator import Instrumentator
 
+# 👉 NEW: Import our Agentic State Machine (Phase 11)
+from agent import build_agentic_graph
+
 # Initialize the FastAPI application
 app = FastAPI(
     title="Enterprise AI Orchestrator",
@@ -45,6 +48,11 @@ vector_store = Chroma(
     embedding_function=embeddings,
     persist_directory="./chroma_db"
 )
+
+# 👉 NEW: Compile the Agentic Graph once on startup
+print("⚙️ [AI ENGINE] Compiling Agentic Graph...")
+agent_workflow = build_agentic_graph(vector_store)
+
 print("🚀 [AI ENGINE] System Ready!")
 # ------------------------------
 
@@ -125,7 +133,6 @@ async def process_document(event: DocumentEvent):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-
 # --- THE CHAT ENGINE ---
 
 # Define the shape of the incoming question
@@ -133,57 +140,96 @@ class AskEvent(BaseModel):
     document_id: str
     question: str
 
+"""
+ARCHITECTURAL NOTE [AGENTIC ROUTING vs STANDARD RAG]:
+In Phase 11, we introduced the 'Feature Flag' pattern. 
+By setting AI_MODE=AGENTIC in our environment variables, we route questions 
+through a LangGraph state machine (Semantic Router) capable of live web searches and general chitchat. 
+If AI_MODE=STANDARD (or is left unset), it falls back to our Phase 1 linear ChromaDB search.
+This allows safe A/B testing of AI capabilities in production without tearing down infrastructure.
+"""
 @app.post("/ask-copilot")
 async def ask_copilot(event: AskEvent):
     print(f"\n💬 [AI ENGINE] Question received for doc {event.document_id}: '{event.question}'")
 
-    try:
-        # 1. RETRIEVAL: Find the top 3 most relevant chunks in ChromaDB
-        print("🔍 [AI ENGINE] Searching Vector Database for the answer...")
-        
-        # We explicitly filter by document_id so it doesn't accidentally pull answers from a different PDF!
-        results = vector_store.similarity_search(
-            query=event.question,
-            k=3,
-            filter={"document_id": event.document_id} 
-        )
+    # 👉 THE FEATURE FLAG
+    # Defaults to 'STANDARD' if not set in docker-compose.yml
+    AI_MODE = os.getenv("AI_MODE", "STANDARD").upper()
+    print(f"🎛️ [FEATURE FLAG] Operating Mode: {AI_MODE}")
 
-        if not results:
+    try:
+        if AI_MODE == "AGENTIC":
+            # --- THE NEW LANGGRAPH PATH ---
+            print("🧠 [AI ENGINE] Handing request to LangGraph Semantic Router...")
+            
+            # Run the state machine!
+            result = agent_workflow.invoke({
+                "question": event.question,
+                "document_id": event.document_id,
+                "context": "",
+                "route": "",
+                "answer": ""
+            })
+            
+            # Dynamic Source Attribution for the UI
+            if result["route"] == "DATABASE":
+                sources = [event.document_id]
+            elif result["route"] == "WEB":
+                sources = ["Live Internet Search via DuckDuckGo"]
+            else:
+                sources = ["General AI Knowledge"]
+                
             return {
-                "answer": "I couldn't find any relevant information in this document.", 
-                "sources": []
+                "answer": result["answer"],
+                "sources": sources
             }
 
-        # Combine the 3 chunks into a single giant string of context
-        context = "\n\n".join([doc.page_content for doc in results])
-        print(f"✅ [AI ENGINE] Found {len(results)} relevant chunks.")
+        else:
+            # --- THE LEGACY STANDARD PATH ---
+            print("🔍 [AI ENGINE] Executing Standard RAG Pipeline...")
+            
+            # 1. RETRIEVAL: Find the top 3 most relevant chunks in ChromaDB
+            results = vector_store.similarity_search(
+                query=event.question,
+                k=3,
+                filter={"document_id": event.document_id} 
+            )
 
-        # 2. GENERATION: Connect to your Generative LLM (Llama 3 in LM Studio)
-        print("🧠 [AI ENGINE] Sending context to Generative LLM for final answer...")
-        
-        # We set temperature to 0.1 so the AI doesn't hallucinate. It stays strictly factual.
-        llm = ChatOpenAI(
-            openai_api_base="http://host.docker.internal:1234/v1",
-            openai_api_key="lm-studio",
-            temperature=0.1 
-        )
+            if not results:
+                return {
+                    "answer": "I couldn't find any relevant information in this document.", 
+                    "sources": []
+                }
 
-        # 3. PROMPT ENGINEERING: The Enterprise Guardrails
-        prompt_template = ChatPromptTemplate.from_messages([
-            ("system", "You are an expert enterprise AI assistant. Answer the user's question using ONLY the provided CONTEXT. If the answer is not in the context, say 'I don't know based on the provided document.' Do not make things up.\n\nCONTEXT:\n{context}"),
-            ("user", "{question}")
-        ])
+            # Combine the 3 chunks into a single giant string of context
+            context = "\n\n".join([doc.page_content for doc in results])
+            print(f"✅ [AI ENGINE] Found {len(results)} relevant chunks.")
 
-        # 4. CHAIN IT TOGETHER AND RUN IT
-        chain = prompt_template | llm
-        response = chain.invoke({"context": context, "question": event.question})
+            # 2. GENERATION: Connect to your Generative LLM (Llama 3 in LM Studio)
+            print("🧠 [AI ENGINE] Sending context to Generative LLM for final answer...")
+            
+            llm = ChatOpenAI(
+                openai_api_base="http://host.docker.internal:1234/v1",
+                openai_api_key="lm-studio",
+                temperature=0.1 
+            )
 
-        print("✅ [AI ENGINE] Answer generated successfully!")
+            # 3. PROMPT ENGINEERING: The Enterprise Guardrails
+            prompt_template = ChatPromptTemplate.from_messages([
+                ("system", "You are an expert enterprise AI assistant. Answer the user's question using ONLY the provided CONTEXT. If the answer is not in the context, say 'I don't know based on the provided document.' Do not make things up.\n\nCONTEXT:\n{context}"),
+                ("user", "{question}")
+            ])
 
-        return {
-            "answer": response.content,
-            "sources": [event.document_id]
-        }
+            # 4. CHAIN IT TOGETHER AND RUN IT
+            chain = prompt_template | llm
+            response = chain.invoke({"context": context, "question": event.question})
+
+            print("✅ [AI ENGINE] Answer generated successfully!")
+
+            return {
+                "answer": response.content,
+                "sources": [event.document_id]
+            }
 
     except Exception as e:
         print(f"❌ [AI ENGINE ERROR] {str(e)}")
