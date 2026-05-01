@@ -1,0 +1,31 @@
+# Place this in ai-orchestrator/.github/workflows/ci-cd.yml
+name: AI Orchestrator CI/CD
+
+on:
+  push:
+    branches: ["main"]
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & Push AI Engine
+        uses: docker/build-push-action@v5
+        with:
+          context: . # Because we are already inside the AI repo!
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/ai-orchestrator:latest
