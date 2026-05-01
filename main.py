@@ -1,11 +1,13 @@
 import os
-import threading # 👉 NEW: Required to run the RabbitMQ worker alongside FastAPI
-from fastapi import FastAPI, HTTPException
+import threading 
+import jwt #[cite: 3]
+from fastapi import FastAPI, HTTPException, Depends #[cite: 1, 3]
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials #[cite: 3]
 from pydantic import BaseModel
 import PyPDF2
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-# 👉 NEW: Import OpenAI components (We will route these to LM Studio)
+# Import OpenAI components (We will route these to LM Studio)
 from langchain_core.documents import Document
 from langchain_openai import OpenAIEmbeddings
 from langchain_chroma import Chroma
@@ -14,10 +16,9 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 
 from worker import start_worker
-
 from prometheus_fastapi_instrumentator import Instrumentator
 
-# 👉 NEW: Import our Agentic State Machine (Phase 11)
+# Import our Agentic State Machine (Phase 11)
 from agent import build_agentic_graph
 
 # Initialize the FastAPI application
@@ -27,19 +28,23 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# --- SECURITY CONFIGURATION (Layer 0) ---
+security = HTTPBearer() #[cite: 3]
+JWT_SECRET = "enterprise-secret-2026" # Match this with your BFF/Identity secret #[cite: 3]
+
 # --- START UP THE AI BRAIN (VIA LM STUDIO) ---
 print("🧠 [AI ENGINE] Connecting to LM Studio Local Server...")
 
-# NEW: Instrument the app to expose a /metrics endpoint for Prometheus
-Instrumentator().instrument(app).expose(app)
+# Instrument the app to expose a /metrics endpoint for Prometheus
+Instrumentator().instrument(app).expose(app) #[cite: 1]
 
 # THE DROP-IN PATTERN: We use the official OpenAI class, but hijack the URL.
 embeddings = OpenAIEmbeddings(
     openai_api_base="http://host.docker.internal:1234/v1",
     openai_api_key="lm-studio",
-    model="text-embedding-nomic-embed-text-v1.5", # 👉 FIX 1: Explicitly name your LM Studio model
-    check_embedding_ctx_length=False # 👉 FIX 2: Forces LangChain to send raw strings, NOT integers
-)
+    model="text-embedding-nomic-embed-text-v1.5", # 👉 Explicitly name your LM Studio model
+    check_embedding_ctx_length=False # 👉 Forces LangChain to send raw strings, NOT integers
+) #[cite: 1]
 
 print("💾 [AI ENGINE] Connecting to Chroma Vector Database...")
 # This will create a local folder called 'chroma_db' to permanently save our vectors
@@ -47,11 +52,11 @@ vector_store = Chroma(
     collection_name="enterprise_documents",
     embedding_function=embeddings,
     persist_directory="./chroma_db"
-)
+) #[cite: 1]
 
-# 👉 NEW: Compile the Agentic Graph once on startup
+# 👉 Compile the Agentic Graph once on startup
 print("⚙️ [AI ENGINE] Compiling Agentic Graph...")
-agent_workflow = build_agentic_graph(vector_store)
+agent_workflow = build_agentic_graph(vector_store) #[cite: 1]
 
 print("🚀 [AI ENGINE] System Ready!")
 # ------------------------------
@@ -59,41 +64,41 @@ print("🚀 [AI ENGINE] System Ready!")
 class DocumentEvent(BaseModel):
     document_id: str
     filename: str
-    file_path: str
+    file_path: str #[cite: 1]
+
+class AskEvent(BaseModel):
+    document_id: str
+    question: str #[cite: 1, 3]
 
 @app.get("/health")
 async def health_check():
-    return {"status": "online", "service": "ai-orchestrator"}
+    return {"status": "online", "service": "ai-orchestrator"} #[cite: 1]
 
 """
 ARCHITECTURAL NOTE [LEGACY API]:
 This /process-document endpoint is our Phase 1 Synchronous REST implementation. 
-While it still works, it forces the caller (BFF) to wait for the entire PDF to be chunked and embedded.
-In Phase 8 (Event-Driven), we shifted to RabbitMQ. The actual logic inside this route 
-is now mirrored inside `worker.py` for asynchronous background processing. 
-We keep this endpoint alive for manual testing or direct API overrides.
 """
 @app.post("/process-document")
 async def process_document(event: DocumentEvent):
-    print(f"\n📥 [AI ENGINE] Received task to process: {event.document_id}")
+    print(f"\n📥 [AI ENGINE] Received task to process: {event.document_id}") #[cite: 1]
     
     if not os.path.exists(event.file_path):
-        print(f"❌ [AI ENGINE ERROR] File not found at {event.file_path}")
-        raise HTTPException(status_code=404, detail=f"File not found at {event.file_path}")
+        print(f"❌ [AI ENGINE ERROR] File not found at {event.file_path}") #[cite: 1]
+        raise HTTPException(status_code=404, detail=f"File not found at {event.file_path}") #[cite: 1]
 
     try:
         # 1. EXTRACTION
-        print(f"📄 [AI ENGINE] Extracting text from: {event.filename}...")
+        print(f"📄 [AI ENGINE] Extracting text from: {event.filename}...") #[cite: 1]
         text_content = ""
         with open(event.file_path, "rb") as file:
             reader = PyPDF2.PdfReader(file)
             for page in reader.pages:
                 extracted = page.extract_text()
                 if extracted:
-                    text_content += extracted + "\n"
+                    text_content += extracted + "\n" #[cite: 1]
         
         # 2. CHUNKING
-        print("✂️ [AI ENGINE] Chunking text...")
+        print("✂️ [AI ENGINE] Chunking text...") #[cite: 1]
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=1000, 
             chunk_overlap=200,
@@ -101,13 +106,13 @@ async def process_document(event: DocumentEvent):
         )
         raw_chunks = text_splitter.split_text(text_content)
         
-        # 👉 FIX 3: Strip out any empty chunks that might crash LM Studio
-        chunks = [chunk for chunk in raw_chunks if chunk.strip()]
+        # 👉 Strip out any empty chunks that might crash LM Studio
+        chunks = [chunk for chunk in raw_chunks if chunk.strip()] #[cite: 1]
         
-        print(f"✅ [AI ENGINE] Created {len(chunks)} valid overlapping chunks.")
+        print(f"✅ [AI ENGINE] Created {len(chunks)} valid overlapping chunks.") #[cite: 1]
 
-        # 3. VECTOR INGESTION (Now powered by Nomic in LM Studio!)
-        print("🧮 [AI ENGINE] Requesting Embeddings from LM Studio and saving to ChromaDB...")
+        # 3. VECTOR INGESTION
+        print("🧮 [AI ENGINE] Requesting Embeddings from LM Studio and saving to ChromaDB...") #[cite: 1]
         
         documents = [
             Document(
@@ -117,61 +122,60 @@ async def process_document(event: DocumentEvent):
             for chunk in chunks
         ]
         
-        # Fire them into the database! (This triggers the API call to LM Studio)
-        vector_store.add_documents(documents)
-        print("✅ [AI ENGINE] Vectors successfully saved to Disk!")
+        vector_store.add_documents(documents) #[cite: 1]
+        print("✅ [AI ENGINE] Vectors successfully saved to Disk!") #[cite: 1]
 
         return {
             "status": "success", 
             "document_id": event.document_id,
             "chunks_created": len(chunks),
             "message": f"Successfully chunked and embedded {event.filename} via LM Studio."
-        }
+        } #[cite: 1]
 
     except Exception as e:
-        print(f"❌ [AI ENGINE ERROR] {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"❌ [AI ENGINE ERROR] {str(e)}") #[cite: 1]
+        raise HTTPException(status_code=500, detail=str(e)) #[cite: 1]
 
 
-# --- THE CHAT ENGINE ---
+# --- THE SECURED CHAT ENGINE ---
 
-# Define the shape of the incoming question
-class AskEvent(BaseModel):
-    document_id: str
-    question: str
-
-"""
-ARCHITECTURAL NOTE [AGENTIC ROUTING vs STANDARD RAG]:
-In Phase 11, we introduced the 'Feature Flag' pattern. 
-By setting AI_MODE=AGENTIC in our environment variables, we route questions 
-through a LangGraph state machine (Semantic Router) capable of live web searches and general chitchat. 
-If AI_MODE=STANDARD (or is left unset), it falls back to our Phase 1 linear ChromaDB search.
-This allows safe A/B testing of AI capabilities in production without tearing down infrastructure.
-"""
 @app.post("/ask-copilot")
-async def ask_copilot(event: AskEvent):
-    print(f"\n💬 [AI ENGINE] Question received for doc {event.document_id}: '{event.question}'")
+async def ask_copilot(event: AskEvent, credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """Validates user identity before allowing any AI interaction.""" #[cite: 3]
+    
+    # 1. IDENTITY PERIMETER CHECK (Layer 0)
+    try:
+        token = credentials.credentials #[cite: 3]
+        payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"]) #[cite: 3]
+        # user_id = payload.get("sub") # Extract the unique user identifier #[cite: 3]
+        user_id = payload.get("id")
+        print(f"👤 [AUTH] Request validated for User: {user_id}") #[cite: 3]
+    except Exception:
+        print("🚨 [AUTH ERROR] Invalid or missing token!") #[cite: 3]
+        raise HTTPException(status_code=401, detail="Unauthorized: Invalid Identity Token") #[cite: 3]
+
+    print(f"\n💬 [AI ENGINE] Question received for doc {event.document_id}: '{event.question}'") #[cite: 3]
 
     # 👉 THE FEATURE FLAG
-    # Defaults to 'STANDARD' if not set in docker-compose.yml
-    AI_MODE = os.getenv("AI_MODE", "STANDARD").upper()
-    print(f"🎛️ [FEATURE FLAG] Operating Mode: {AI_MODE}")
+    AI_MODE = os.getenv("AI_MODE", "STANDARD").upper() #[cite: 3]
+    print(f"🎛️ [FEATURE FLAG] Operating Mode: {AI_MODE}") #[cite: 3]
 
     try:
         if AI_MODE == "AGENTIC":
-            # --- THE NEW LANGGRAPH PATH ---
-            print("🧠 [AI ENGINE] Handing request to LangGraph Semantic Router...")
+            # --- THE SECURED LANGGRAPH PATH ---
+            print("🧠 [AI ENGINE] Handing request to LangGraph Semantic Router...") #[cite: 3]
             
-            # Run the state machine!
+            # Run the state machine with injected User Identity
             result = agent_workflow.invoke({
                 "question": event.question,
                 "document_id": event.document_id,
+                "user_id": user_id, # 👉 Injecting user_id for RLS/Security nodes
                 "context": "",
                 "route": "",
                 "answer": ""
-            })
+            }) #[cite: 3]
             
-            # Dynamic Source Attribution for the UI
+            # Dynamic Source Attribution
             if result["route"] == "DATABASE":
                 sources = [event.document_id]
             elif result["route"] == "WEB":
@@ -182,72 +186,53 @@ async def ask_copilot(event: AskEvent):
             return {
                 "answer": result["answer"],
                 "sources": sources
-            }
+            } #[cite: 3]
 
         else:
             # --- THE LEGACY STANDARD PATH ---
-            print("🔍 [AI ENGINE] Executing Standard RAG Pipeline...")
+            print("🔍 [AI ENGINE] Executing Standard RAG Pipeline...") #[cite: 3]
             
-            # 1. RETRIEVAL: Find the top 3 most relevant chunks in ChromaDB
             results = vector_store.similarity_search(
                 query=event.question,
                 k=3,
                 filter={"document_id": event.document_id} 
-            )
+            ) #[cite: 3]
 
             if not results:
                 return {
                     "answer": "I couldn't find any relevant information in this document.", 
                     "sources": []
-                }
+                } #[cite: 3]
 
-            # Combine the 3 chunks into a single giant string of context
             context = "\n\n".join([doc.page_content for doc in results])
-            print(f"✅ [AI ENGINE] Found {len(results)} relevant chunks.")
-
-            # 2. GENERATION: Connect to your Generative LLM (Llama 3 in LM Studio)
-            print("🧠 [AI ENGINE] Sending context to Generative LLM for final answer...")
             
             llm = ChatOpenAI(
                 openai_api_base="http://host.docker.internal:1234/v1",
                 openai_api_key="lm-studio",
                 temperature=0.1 
-            )
+            ) #[cite: 3]
 
-            # 3. PROMPT ENGINEERING: The Enterprise Guardrails
             prompt_template = ChatPromptTemplate.from_messages([
-                ("system", "You are an expert enterprise AI assistant. Answer the user's question using ONLY the provided CONTEXT. If the answer is not in the context, say 'I don't know based on the provided document.' Do not make things up.\n\nCONTEXT:\n{context}"),
+                ("system", "You are an expert enterprise AI assistant. Answer based on CONTEXT:\n{context}"),
                 ("user", "{question}")
-            ])
+            ]) #[cite: 3]
 
-            # 4. CHAIN IT TOGETHER AND RUN IT
             chain = prompt_template | llm
-            response = chain.invoke({"context": context, "question": event.question})
-
-            print("✅ [AI ENGINE] Answer generated successfully!")
+            response = chain.invoke({"context": context, "question": event.question}) #[cite: 3]
 
             return {
                 "answer": response.content,
                 "sources": [event.document_id]
-            }
+            } #[cite: 3]
 
     except Exception as e:
-        print(f"❌ [AI ENGINE ERROR] {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"❌ [AI ENGINE ERROR] {str(e)}") #[cite: 3]
+        raise HTTPException(status_code=500, detail=str(e)) #[cite: 3]
 
 
-# --- ⚡ EVENT-DRIVEN BACKBONE (Phase 8 Integration) ---
-
-"""
-ARCHITECTURAL NOTE [ASYNCHRONOUS WORKER]:
-In an enterprise environment, long-running ML tasks (like embedding a 50-page PDF) 
-should never block the main web thread. We attach a background Daemon Thread to the 
-FastAPI startup lifecycle. This thread listens to the RabbitMQ 'document_ingestion_queue'.
-When the Node.js BFF drops a message in the queue, this worker picks it up and processes it silently.
-"""
+# --- ⚡ ASYNCHRONOUS WORKER ---
 @app.on_event("startup")
 def startup_event():
-    print("🚀 [EVENT MESH] Spinning up Background RabbitMQ Consumer Thread...")
-    # daemon=True ensures the thread dies safely if the FastAPI server is shut down
-    worker_thread = threading.Thread(target=start_worker, daemon=True)
-    worker_thread.start()
+    print("🚀 [EVENT MESH] Spinning up Background RabbitMQ Consumer Thread...") #[cite: 3]
+    worker_thread = threading.Thread(target=start_worker, daemon=True) #[cite: 3]
+    worker_thread.start() #[cite: 3]
