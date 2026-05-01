@@ -1,4 +1,3 @@
-# ai-orchestrator/agent.py
 import os
 from typing import TypedDict
 from langchain_openai import ChatOpenAI
@@ -11,6 +10,8 @@ from hooks.security_filter import run_pre_routing_hook
 from skills.web_search import execute_web_search
 
 from subagents.code_reviewer_agent import execute_code_review
+
+from skills.mcp_client import execute_mcp_tool
 
 # --- HELPER: Read Layer 1 (Memory) ---
 def load_memory_layer(file_name: str) -> str:
@@ -70,16 +71,25 @@ def analyze_query_node(state: GraphState, vector_store):
 
     # 2. LLM ROUTING: Using Layer 1 Memory
     system_instruction = f"""
+    
     {AGENT_PERSONA}
     
     You are a strict binary classification router.
     
+    If the user asks for enterprise user data or database records, output: DATA
     If the user pastes code or asks for a code review, output: REVIEW
     If the user asks a question requiring factual knowledge or history, output: WEB
     If the user is ONLY making conversational small talk, output: GENERAL
 
     Output EXACTLY ONE WORD. No punctuation. No explanation.
     """
+    
+    # You are a strict binary classification router.
+    # If the user pastes code or asks for a code review, output: REVIEW
+    # If the user asks a question requiring factual knowledge or history, output: WEB
+    # If the user is ONLY making conversational small talk, output: GENERAL
+    # Output EXACTLY ONE WORD. No punctuation. No explanation.
+
     
     prompt = ChatPromptTemplate.from_messages([
         ("system", system_instruction),
@@ -93,7 +103,9 @@ def analyze_query_node(state: GraphState, vector_store):
     print(f"🤖 [SUPERVISOR RAW LLM OUTPUT]: '{raw_output}'")
     
     # Safely extract the route
-    if "REVIEW" in raw_output:
+    if "DATA" in raw_output:
+        route = "DATA"
+    elif "REVIEW" in raw_output:
         route = "REVIEW"
     elif "WEB" in raw_output:
         route = "WEB"
@@ -135,7 +147,7 @@ def generate_response_node(state: GraphState, vector_store):
     else:
         context = state["context"]
         
-    # 👉 THE UPGRADE: Injecting both Persona and Architecture Rules into the final generation
+    #  THE FIX: Changed {context} to {{context}}
     system_instruction = f"""
     {AGENT_PERSONA}
     
@@ -144,7 +156,7 @@ def generate_response_node(state: GraphState, vector_store):
     Answer the user's question strictly using the provided context below.
     
     CONTEXT:
-    {context}
+    {{context}}
     """
         
     prompt = ChatPromptTemplate.from_messages([
@@ -153,6 +165,8 @@ def generate_response_node(state: GraphState, vector_store):
     ])
     
     chain = prompt | llm
+    
+    # LangChain will safely inject the context JSON right here, bypassing the curly brace bug!
     result = chain.invoke({"context": context, "question": state["question"]})
     
     return {"answer": result.content}
@@ -161,7 +175,9 @@ def generate_response_node(state: GraphState, vector_store):
 # 3. DEFINE THE ROUTING LOGIC (The Edges)
 def route_to_next_node(state: GraphState):
     if state.get("route") == "BLOCKED":
-        return "blocked_exit" # 👉 THE FIX: Return a string
+        return "blocked_exit" 
+    elif state["route"] == "DATA":
+        return "query_enterprise_data"
     elif state["route"] == "REVIEW":
         return "code_review" 
     elif state["route"] == "DATABASE":
@@ -194,8 +210,11 @@ def build_agentic_graph(vector_store):
     workflow.add_node("search_web", lambda state: search_web_node(state, vector_store))
     workflow.add_node("generate_response", lambda state: generate_response_node(state, vector_store))
     
+    
     # 👉 THE FIX: Added the new node inside the function!
     workflow.add_node("code_review", lambda state: code_review_node(state, vector_store))
+
+    workflow.add_node("query_enterprise_data", lambda state: query_enterprise_data_node(state, vector_store))
 
     # Define the flow (The edges)
     workflow.set_entry_point("analyze")
@@ -205,11 +224,12 @@ def build_agentic_graph(vector_store):
         "analyze",
         route_to_next_node,
         {
-            "code_review": "code_review", # 👉 THE FIX: Registered the new route
+            "query_enterprise_data": "query_enterprise_data",
+            "code_review": "code_review", 
             "retrieve_database": "retrieve_database",
             "search_web": "search_web",
             "generate_response": "generate_response",
-            "blocked_exit": END # 👉 THE FIX: Map the string to the END object
+            "blocked_exit": END # 
             
         }
     )
@@ -220,7 +240,17 @@ def build_agentic_graph(vector_store):
     
     # Final Exit Edges
     workflow.add_edge("generate_response", END)
-    workflow.add_edge("code_review", END) # 👉 THE FIX: Subagent outputs directly to user
+    workflow.add_edge("code_review", END) 
+    workflow.add_edge("query_enterprise_data", "generate_response")
 
     # Compile the graph
     return workflow.compile()
+
+
+def query_enterprise_data_node(state: GraphState, vector_store):
+    """Delegates the request to the MCP Server."""
+    print("🔌 [SUPERVISOR] Routing to Enterprise MCP Server...")
+    mcp_data = execute_mcp_tool(state["question"])
+    
+    # We pass the raw database dump into the context so the generator can format it nicely!
+    return {"context": mcp_data}

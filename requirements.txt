@@ -15,3 +15,5 @@ langgraph
 langchain-community
 duckduckgo-search>=5.0.0
 ddgs
+mcp
+uv
