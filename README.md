@@ -20,3 +20,16 @@ This repository houses the asynchronous AI orchestration engine. It operates ind
 - `/app/agents` - LangGraph nodes, edges, and tool definitions.
 - `/app/consumers` - Kafka/RabbitMQ background workers listening for processing jobs.
 - `/app/vectorstore` - Connection logic for Pinecone/Vector databases.
+
+ai-orchestrator/
+├── memory/ # Layer 1: Rules & Context
+│ ├── persona.md
+│ └── architecture.rules.md
+├── skills/ # Layer 2: Tools & Knowledge
+│ ├── **init**.py
+│ └── web_search.py
+├── hooks/ # Layer 3: Guardrails
+├── subagents/ # Layer 4: Delegation
+├── agent.py # The Supervisor (LangGraph)
+├── main.py
+└── requirements.txt
