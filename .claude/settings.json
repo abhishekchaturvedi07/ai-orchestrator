@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker compose up *)",
+      "Bash(pytest *)",
+      "Bash(git status)"
+    ],
+    "deny": [
+      "Read(.env)",
+      "Read(chroma_db/**)",
+      "Bash(rm -rf *)",
+      "Bash(git push --force *)"
+    ]
+  }
+}
